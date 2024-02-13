@@ -13,7 +13,11 @@ import ReactionSelector from "./reaction/ReactionButton";
 import FlyingReaction from "./reaction/FlyingReaction";
 import useInterval from "@/hooks/useInterval";
 
-const Live = () => {
+interface LiveProps {
+  canvasRef: React.MutableRefObject<HTMLCanvasElement | null>;
+}
+
+const Live = ({ canvasRef }: LiveProps) => {
   // Hook que indica cuando personas hay conectadas al mismo momento
   const others = useOthers();
 
@@ -172,13 +176,14 @@ const Live = () => {
   // creas el event listener que es onPointer
   return (
     <div
+      id="canvas"
       className="h-[100vh] w-full flex justify-center items-center text-center"
       onPointerMove={handlePointerMove}
       onPointerLeave={handlePointerLeave}
       onPointerDown={handlePointerDown}
       onPointerUp={handlePointerUp}
     >
-     <canvas />
+      <canvas ref={canvasRef} />
       {/* Live Reactions  */}
       {reaction.map((r) => (
         <FlyingReaction

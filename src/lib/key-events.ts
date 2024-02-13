@@ -91,7 +91,7 @@ export const handleKeyDown = ({
   undo: () => void;
   redo: () => void;
   syncShapeInStorage: (shape: fabric.Object) => void;
-  deleteShapeFromStorage: (id: string) => void;
+  deleteShapeFromStorage: any
 }) => {
   // Check if the key pressed is ctrl/cmd + c (copy)
   if ((e?.ctrlKey || e?.metaKey) && e.keyCode === 67) {

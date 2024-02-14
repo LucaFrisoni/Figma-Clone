@@ -9,12 +9,13 @@ import {
   handleCanvasMouseDown,
   handleCanvasMouseUp,
   handleCanvasObjectModified,
+  handleCanvasSelectionCreated,
   handleCanvaseMouseMove,
   handleResize,
   initializeFabric,
   renderCanvas,
 } from "@/lib/canvas";
-import { ActiveElement } from "@/types/type";
+import { ActiveElement, Attributes } from "@/types/type";
 import {
   useMutation,
   useRedo,
@@ -24,6 +25,7 @@ import {
 import { root } from "postcss";
 import { defaultNavElement } from "@/constants";
 import { handleDelete, handleKeyDown } from "@/lib/key-events";
+import { handleImageUpload } from "@/lib/shapes";
 
 export default function Page() {
   const undo = useUndo();
@@ -42,10 +44,24 @@ export default function Page() {
 
   const activeObjectRef = useRef<fabric.Object | null>(null);
 
+  const imageInputRef = useRef<HTMLInputElement | null>(null);
+
+  const isEditingRef = useRef(false);
+
   const [activeElement, setActiveElement] = useState<ActiveElement>({
     name: "",
     value: "",
     icon: "",
+  });
+
+  const [elementAttributes, setElementAttributes] = useState<Attributes>({
+    width: "",
+    height: "",
+    fontSize: "",
+    fontFamily: "",
+    fontWeight: "",
+    fill: "aabbcc",
+    stroke: "#aabbcc",
   });
 
   // Extract arbitrary data from the Liveblocks Storage state, using an arbitrary selector function.
@@ -97,6 +113,13 @@ export default function Page() {
       case "delete":
         handleDelete(fabricRef.current as any, deleteShapeFromStorage);
         setActiveElement(defaultNavElement);
+      case "image":
+        imageInputRef.current?.click();
+        isDrawing.current = false;
+        if (fabricRef.current) {
+          fabricRef.current.isDrawingMode = false;
+        }
+        break;
       default:
         break;
     }
@@ -143,6 +166,13 @@ export default function Page() {
     canvas.on("object:modified", (options: any) => {
       handleCanvasObjectModified({ options, syncShapeInStorage });
     });
+    canvas.on("selection:created", (options: any) => {
+      handleCanvasSelectionCreated({
+        options,
+        isEditingRef,
+        setElementAttributes,
+      });
+    });
 
     window.addEventListener("resize", () => {
       //@ts-ignore
@@ -157,7 +187,7 @@ export default function Page() {
         undo,
         redo,
         syncShapeInStorage,
-        deleteShapeFromStorage
+        deleteShapeFromStorage,
       });
     });
 
@@ -178,14 +208,32 @@ export default function Page() {
   return (
     <main className="h-screen overflow-hidden ">
       <Navbar
+        imageInputRef={imageInputRef}
         activeElement={activeElement}
         handleActiveElement={handleActiveElement}
+        handleImageUpload={(e: any) => {
+          e.stopPropagation();
+          handleImageUpload({
+            file: e.target.files[0],
+            canvas: fabricRef as any,
+            shapeRef,
+            syncShapeInStorage,
+          });
+        }}
       />
 
       <section className="flex h-full flex-row">
         <LeftSidebar allShapes={Array.from(canvasObjects)} />
         <Live canvasRef={canvasRef} />
-        <RightSidebar />
+        <RightSidebar 
+        elementAttributes={elementAttributes}
+        setElementAttributes={setElementAttributes}
+        fabricRef={fabricRef}
+        isEditingRef={isEditingRef}
+        activeObjectRef={activeObjectRef}
+        syncShapeInStorage={syncShapeInStorage}
+        />
+      
       </section>
     </main>
   );

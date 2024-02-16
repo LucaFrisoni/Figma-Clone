@@ -14,6 +14,7 @@ export function Room({ children }: { children: ReactNode }) {
       id="my-room"
       initialPresence={{
         cursor: null,
+        //@ts-ignore
         cursorColor: null,
         editingText: null,
       }}

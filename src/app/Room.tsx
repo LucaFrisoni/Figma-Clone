@@ -7,6 +7,8 @@ import { LiveMap } from "@liveblocks/client";
 import Loader from "@/components/Loader";
 
 export function Room({ children }: { children: ReactNode }) {
+
+  // Coment
   return (
     <RoomProvider
       id="my-room"

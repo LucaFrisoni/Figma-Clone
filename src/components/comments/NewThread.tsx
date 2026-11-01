@@ -14,6 +14,7 @@ import { ComposerSubmitComment } from "@liveblocks/react-comments/primitives";
 
 
 import { useMaxZIndex } from "@/lib/useMaxZIndex";
+import { markThreadAsNew } from "@/lib/newThreads";
 
 import PinnedComposer from "./PinnedComposer";
 import NewThreadCursor from "./NewThreadCursor";
@@ -68,7 +69,7 @@ export const NewThread = ({ children }: Props) => {
         const isClickOnComposer = ((e as any)._savedComposedPath = e
           .composedPath()
           .some((el: any) => {
-            return el.classList?.contains("lb-composer-editor-actions");
+            return el.classList?.contains("lb-composer");
           }));
 
         // if click is inisde/on composer, don't do anything
@@ -177,7 +178,7 @@ export const NewThread = ({ children }: Props) => {
       const y = composerCoords.y - top;
 
       // create a new thread with the composer coords and cursor selectors
-      createThread({
+      const thread = createThread({
         body,
         metadata: {
           x,
@@ -186,6 +187,8 @@ export const NewThread = ({ children }: Props) => {
           zIndex: maxZIndex + 1,
         },
       });
+
+      markThreadAsNew(thread.id);
 
       setComposerCoords(null);
       setCreatingCommentState("complete");

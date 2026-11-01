@@ -93,22 +93,25 @@ export const createSpecificShape = (
 export const handleImageUpload = ({
   file,
   canvas,
-  shapeRef,
   syncShapeInStorage,
 }: ImageUpload) => {
   const reader = new FileReader();
 
   reader.onload = () => {
-    fabric.Image.fromURL(reader.result as string, (img) => {
+    // @ts-ignore the types don't include the second argument of this callback
+    fabric.Image.fromURL(reader.result as string, (img, hasFailed) => {
+      if (hasFailed) {
+        window.alert("That file could not be loaded as an image.");
+        return;
+      }
+
       img.scaleToWidth(200);
       img.scaleToHeight(200);
-
-      canvas.current.add(img);
 
       // @ts-ignore
       img.objectId = uuidv4();
 
-      shapeRef.current = img;
+      canvas.current.add(img);
 
       syncShapeInStorage(img);
       canvas.current.requestRenderAll();
@@ -116,6 +119,24 @@ export const handleImageUpload = ({
   };
 
   reader.readAsDataURL(file);
+};
+
+// objects inside a multiple selection hold coordinates relative to it, so the selection
+// is dissolved while reading them to get the position they really have on the canvas
+export const withAbsoluteSelection = <T>(
+  canvas: fabric.Canvas,
+  callback: (objects: fabric.Object[]) => T
+) => {
+  const objects = canvas.getActiveObjects();
+
+  if (canvas.getActiveObject()?.type !== "activeSelection") return callback(objects);
+
+  canvas.discardActiveObject();
+  const result = callback(objects);
+  canvas.setActiveObject(new fabric.ActiveSelection(objects, { canvas }));
+  canvas.requestRenderAll();
+
+  return result;
 };
 
 export const createShape = (
@@ -131,32 +152,56 @@ export const createShape = (
   return createSpecificShape(shapeType, pointer);
 };
 
+// the size goes through the scale because circles, lines, paths and images rebuild
+// their width and height from their own data, so setting those directly would be lost
+const setElementSize = (
+  element: fabric.Object,
+  property: "width" | "height",
+  value: string
+) => {
+  const size = Number(value);
+  const baseSize = element[property];
+
+  if (!(size > 0) || !baseSize) return false;
+
+  element.set(property === "width" ? "scaleX" : "scaleY", size / baseSize);
+  return true;
+};
+
+const TEXT_PROPERTIES = ["fontFamily", "fontSize", "fontWeight"];
+
+const setElementProperty = (
+  element: fabric.Object,
+  property: string,
+  value: string
+) => {
+  if (TEXT_PROPERTIES.includes(property) && element.type !== "i-text") return false;
+
+  const newValue = property === "fontSize" ? Number(value) : value;
+  if (element[property as keyof object] === newValue) return false;
+
+  element.set(property as keyof object, newValue as never);
+  return true;
+};
+
 export const modifyShape = ({
   canvas,
   property,
   value,
-  activeObjectRef,
   syncShapeInStorage,
 }: ModifyShape) => {
   const selectedElement = canvas.getActiveObject();
 
   if (!selectedElement || selectedElement?.type === "activeSelection") return;
 
-  // if  property is width or height, set the scale of the selected element
-  if (property === "width") {
-    selectedElement.set("scaleX", 1);
-    selectedElement.set("width", value);  
-  } else if (property === "height") {
-    selectedElement.set("scaleY", 1);
-    selectedElement.set("height", value);
-  } else {
-    if (selectedElement[property as keyof object] === value) return;
-    selectedElement.set(property as keyof object, value);
-  }
+  const hasChanged =
+    property === "width" || property === "height"
+      ? setElementSize(selectedElement, property, value)
+      : setElementProperty(selectedElement, property, value);
 
-  // set selectedElement to activeObjectRef
-  activeObjectRef.current = selectedElement;
+  if (!hasChanged) return;
 
+  selectedElement.setCoords();
   syncShapeInStorage(selectedElement);
 };
 
@@ -172,15 +217,12 @@ export const bringElement = ({
 
   if (!selectedElement || selectedElement?.type === "activeSelection") return;
 
-  // bring the selected element to the front
-  if (direction === "front") {
-    canvas.bringToFront(selectedElement);
-  } else if (direction === "back") {
-    canvas.sendToBack(selectedElement);
-  }
+  const zIndexes = canvas.getObjects().map((object) => object.zIndex ?? 0);
 
-  // canvas.renderAll();
+  // the order lives in the shape data because it has to survive reloads and reach other users
+  selectedElement.zIndex =
+    direction === "front" ? Math.max(...zIndexes) + 1 : Math.min(...zIndexes) - 1;
+
+  // storage update re-renders all objects on the canvas in the new order
   syncShapeInStorage(selectedElement);
-
-  // re-render all objects on the canvas
 };

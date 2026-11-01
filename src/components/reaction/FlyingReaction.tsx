@@ -7,12 +7,15 @@ type Props = {
   value: string;
 };
 
+// tailwind only generates classes written in full, so they can't be built at runtime
+const TEXT_SIZES = ["text-2xl", "text-3xl", "text-4xl", "text-5xl", "text-6xl"];
+
 export default function FlyingReaction({ x, y, timestamp, value }: Props) {
   return (
     <div
       className={`pointer-events-none absolute select-none ${
         styles.disappear
-      } text-${(timestamp % 5) + 2}xl ${styles["goUp" + (timestamp % 3)]}`}
+      } ${TEXT_SIZES[timestamp % TEXT_SIZES.length]} ${styles["goUp" + (timestamp % 3)]}`}
       style={{ left: x, top: y }}
     >
       <div className={styles["leftRight" + (timestamp % 3)]}>

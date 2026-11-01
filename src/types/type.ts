@@ -64,6 +64,8 @@ export type ActiveElement = {
   icon: string;
 } | null;
 
+export type DragPoint = { x: number; y: number };
+
 export interface CustomFabricObject<T extends fabric.Object>
   extends fabric.Object {
   objectId?: string;
@@ -73,7 +75,6 @@ export type ModifyShape = {
   canvas: fabric.Canvas;
   property: string;
   value: any;
-  activeObjectRef: React.MutableRefObject<fabric.Object | null>;
   syncShapeInStorage: (shape: fabric.Object) => void;
 };
 
@@ -86,7 +87,6 @@ export type ElementDirection = {
 export type ImageUpload = {
   file: File;
   canvas: React.MutableRefObject<fabric.Canvas>;
-  shapeRef: React.MutableRefObject<fabric.Object | null>;
   syncShapeInStorage: (shape: fabric.Object) => void;
 };
 
@@ -94,7 +94,6 @@ export type RightSidebarProps = {
   elementAttributes: Attributes;
   setElementAttributes: React.Dispatch<React.SetStateAction<Attributes>>;
   fabricRef: React.RefObject<fabric.Canvas | null>;
-  activeObjectRef: React.RefObject<fabric.Object | null>;
   isEditingRef: React.MutableRefObject<boolean>;
   syncShapeInStorage: (obj: any) => void;
 
@@ -129,6 +128,8 @@ export type CanvasMouseDown = {
   selectedShapeRef: any;
   isDrawing: React.MutableRefObject<boolean>;
   shapeRef: React.MutableRefObject<fabric.Object | null>;
+  drawOriginRef: React.MutableRefObject<DragPoint | null>;
+  pauseHistory: () => void;
 };
 
 export type CanvasMouseMove = {
@@ -137,6 +138,7 @@ export type CanvasMouseMove = {
   isDrawing: React.MutableRefObject<boolean>;
   selectedShapeRef: any;
   shapeRef: any;
+  drawOriginRef: React.MutableRefObject<DragPoint | null>;
   syncShapeInStorage: (shape: fabric.Object) => void;
 };
 
@@ -144,15 +146,18 @@ export type CanvasMouseUp = {
   canvas: fabric.Canvas;
   isDrawing: React.MutableRefObject<boolean>;
   shapeRef: any;
-  activeObjectRef: React.MutableRefObject<fabric.Object | null>;
+  drawOriginRef: React.MutableRefObject<DragPoint | null>;
   selectedShapeRef: any;
   syncShapeInStorage: (shape: fabric.Object) => void;
   setActiveElement: any;
+  resumeHistory: () => void;
 };
 
 export type CanvasObjectModified = {
   options: fabric.IEvent;
+  canvas: fabric.Canvas;
   syncShapeInStorage: (shape: fabric.Object) => void;
+  syncShapesInStorage: (shapes: fabric.Object[]) => void;
 };
 
 export type CanvasPathCreated = {
@@ -160,9 +165,10 @@ export type CanvasPathCreated = {
   syncShapeInStorage: (shape: fabric.Object) => void;
 };
 
-export type CanvasSelectionCreated = {
-  options: fabric.IEvent;
-  isEditingRef: React.MutableRefObject<boolean>;
+export type CanvasSelectionChanged = {
+  canvas: fabric.Canvas;
+  renderStateRef: React.MutableRefObject<RenderState>;
+  selectedIdsRef: React.MutableRefObject<string[]>;
   setElementAttributes: React.Dispatch<React.SetStateAction<Attributes>>;
 };
 
@@ -171,10 +177,22 @@ export type CanvasObjectScaling = {
   setElementAttributes: React.Dispatch<React.SetStateAction<Attributes>>;
 };
 
+export type RenderState = {
+  // identifies the latest render so that older ones can be discarded
+  version: number;
+  // true while renderCanvas replaces the objects of the canvas
+  isSwapping: boolean;
+  // true when a render was postponed because the user was busy on the canvas
+  isPending: boolean;
+};
+
 export type RenderCanvas = {
-  fabricRef: React.MutableRefObject<fabric.Canvas | null>;
-  canvasObjects: any;
-  activeObjectRef: any;
+  canvas: fabric.Canvas;
+  canvasObjects: ReadonlyMap<string, any>;
+  isDrawing: React.MutableRefObject<boolean>;
+  renderStateRef: React.MutableRefObject<RenderState>;
+  selectedIdsRef: React.MutableRefObject<string[]>;
+  onRendered: () => void;
 };
 
 export type CursorChatProps = {

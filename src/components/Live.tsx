@@ -20,6 +20,7 @@ import {
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
 import { shortcuts } from "@/constants";
+import { isEditableTarget } from "@/lib/key-events";
 
 interface LiveProps {
   canvasRef: React.MutableRefObject<HTMLCanvasElement | null>;
@@ -43,9 +44,7 @@ const Live = ({ canvasRef, redo, undo }: LiveProps) => {
 
   useInterval(() => {
     setReaction((reaction) =>
-      reaction.filter((r) => {
-        r.timestamp > Date.now() - 4000;
-      })
+      reaction.filter((r) => r.timestamp > Date.now() - 4000)
     );
   }, 1000);
 
@@ -97,7 +96,7 @@ const Live = ({ canvasRef, redo, undo }: LiveProps) => {
         cursor: { x, y },
       });
     }
-  }, []);
+  }, [cursor, cursorState.mode, updateMyPresence]);
 
   const handlePointerLeave = useCallback((event: React.PointerEvent) => {
     setCursorState({ mode: CursorMode.Hidden });
@@ -130,7 +129,7 @@ const Live = ({ canvasRef, redo, undo }: LiveProps) => {
     (event: React.PointerEvent) => {
       setCursorState((state: CursorState) =>
         cursorState.mode === CursorMode.Reaction
-          ? { ...state, isPressed: true }
+          ? { ...state, isPressed: false }
           : state
       );
     },
@@ -147,6 +146,8 @@ const Live = ({ canvasRef, redo, undo }: LiveProps) => {
 
   useEffect(() => {
     const onKeyUp = (e: KeyboardEvent) => {
+      if (isEditableTarget(e.target)) return;
+
       if (e.key === "/") {
         setCursorState({
           mode: CursorMode.Chat,
@@ -160,25 +161,17 @@ const Live = ({ canvasRef, redo, undo }: LiveProps) => {
         setCursorState({
           mode: CursorMode.Hidden,
         });
-      } else if (e.key === "e") {
+      } else if (e.key === "e" && !e.ctrlKey && !e.metaKey) {
         setCursorState({
           mode: CursorMode.ReactionSelector,
         });
       }
     };
 
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "/") {
-        e.preventDefault();
-      }
-    };
-
     window.addEventListener("keyup", onKeyUp);
-    window.addEventListener("keydown", onKeyDown);
 
     return () => {
       window.removeEventListener("keyup", onKeyUp);
-      window.removeEventListener("keydown", onKeyDown);
     };
   }, [updateMyPresence]);
 
@@ -195,6 +188,7 @@ const Live = ({ canvasRef, redo, undo }: LiveProps) => {
         setCursorState({
           mode: CursorMode.ReactionSelector,
         });
+        break;
       case "Undo":
         undo();
         break;
@@ -211,7 +205,7 @@ const Live = ({ canvasRef, redo, undo }: LiveProps) => {
     <ContextMenu>
       <ContextMenuTrigger
         id="canvas"
-        className="relative h-full w-full flex flex-1 justify-center items-center"
+        className="relative h-full min-w-0 flex-1 overflow-hidden"
         onPointerMove={handlePointerMove}
         onPointerLeave={handlePointerLeave}
         onPointerDown={handlePointerDown}

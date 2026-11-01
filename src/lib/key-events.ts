@@ -2,14 +2,41 @@ import { fabric } from "fabric";
 import { v4 as uuidv4 } from "uuid";
 
 import { CustomFabricObject } from "@/types/type";
+import { withAbsoluteSelection } from "./shapes";
+
+const CLIPBOARD_KEY = "clipboard";
+const PASTE_OFFSET = 20;
+
+// copies too big for localStorage (like images) stay available in this tab
+let memoryClipboard: string | null = null;
+
+const writeClipboard = (objects: fabric.Object[]) => {
+  const serializedObjects = JSON.stringify(objects.map((obj) => obj.toObject()));
+
+  try {
+    localStorage.setItem(CLIPBOARD_KEY, serializedObjects);
+    memoryClipboard = null;
+  } catch {
+    localStorage.removeItem(CLIPBOARD_KEY);
+    memoryClipboard = serializedObjects;
+  }
+};
+
+const readClipboard = () => memoryClipboard ?? localStorage.getItem(CLIPBOARD_KEY);
+
+// key presses in a text field, a comment or a text on the canvas belong to that field, not to the editor
+export const isEditableTarget = (target: EventTarget | null) =>
+  Boolean(
+    (target as HTMLElement | null)?.closest?.(
+      "input, textarea, select, [contenteditable='true']"
+    )
+  );
 
 export const handleCopy = (canvas: fabric.Canvas) => {
   const activeObjects = canvas.getActiveObjects();
   if (activeObjects.length > 0) {
-    // Serialize the selected objects
-    const serializedObjects = activeObjects.map((obj) => obj.toObject());
-    // Store the serialized objects in the clipboard
-    localStorage.setItem("clipboard", JSON.stringify(serializedObjects));
+    // Serialize the selected objects and store them in the clipboard
+    withAbsoluteSelection(canvas, writeClipboard);
   }
 
   return activeObjects;
@@ -17,7 +44,7 @@ export const handleCopy = (canvas: fabric.Canvas) => {
 
 export const handlePaste = (
   canvas: fabric.Canvas,
-  syncShapeInStorage: (shape: fabric.Object) => void
+  syncShapesInStorage: (shapes: fabric.Object[]) => void
 ) => {
   if (!canvas || !(canvas instanceof fabric.Canvas)) {
     console.error("Invalid canvas object. Aborting paste operation.");
@@ -25,33 +52,33 @@ export const handlePaste = (
   }
 
   // Retrieve serialized objects from the clipboard
-  const clipboardData = localStorage.getItem("clipboard");
+  const clipboardData = readClipboard();
 
   if (clipboardData) {
     try {
-      const parsedObjects = JSON.parse(clipboardData);
-      parsedObjects.forEach((objData: fabric.Object) => {
-        // convert the plain javascript objects retrieved from localStorage into fabricjs objects (deserialization)
-        fabric.util.enlivenObjects(
-          [objData],
-          (enlivenedObjects: fabric.Object[]) => {
-            enlivenedObjects.forEach((enlivenedObj) => {
-              // Offset the pasted objects to avoid overlap with existing objects
-              enlivenedObj.set({
-                left: enlivenedObj.left || 0 + 20,
-                top: enlivenedObj.top || 0 + 20,
-                objectId: uuidv4(),
-                fill: "#aabbcc",
-              } as CustomFabricObject<any>);
+      // convert the plain javascript objects retrieved from the clipboard into fabricjs objects (deserialization)
+      fabric.util.enlivenObjects(
+        JSON.parse(clipboardData),
+        (enlivenedObjects: fabric.Object[]) => {
+          enlivenedObjects.forEach((enlivenedObj) => {
+            // Offset the pasted objects to avoid overlap with existing objects
+            enlivenedObj.set({
+              left: (enlivenedObj.left || 0) + PASTE_OFFSET,
+              top: (enlivenedObj.top || 0) + PASTE_OFFSET,
+              objectId: uuidv4(),
+            } as CustomFabricObject<any>);
 
-              canvas.add(enlivenedObj);
-              syncShapeInStorage(enlivenedObj);
-            });
-            canvas.renderAll();
-          },
-          "fabric"
-        );
-      });
+            canvas.add(enlivenedObj);
+          });
+
+          syncShapesInStorage(enlivenedObjects);
+          canvas.renderAll();
+
+          // the next paste must land on top of this one, not in the same place
+          writeClipboard(enlivenedObjects);
+        },
+        "fabric"
+      );
     } catch (error) {
       console.error("Error parsing clipboard data:", error);
     }
@@ -83,44 +110,51 @@ export const handleKeyDown = ({
   canvas,
   undo,
   redo,
-  syncShapeInStorage,
-  deleteShapeFromStorage,
+  syncShapesInStorage,
+  deleteSelection,
 }: {
   e: KeyboardEvent;
   canvas: fabric.Canvas | any;
   undo: () => void;
   redo: () => void;
-  syncShapeInStorage: (shape: fabric.Object) => void;
-  deleteShapeFromStorage: any
+  syncShapesInStorage: (shapes: fabric.Object[]) => void;
+  deleteSelection: () => void;
 }) => {
+  if (isEditableTarget(e.target)) return;
+
+  const isModifierPressed = e?.ctrlKey || e?.metaKey;
+
   // Check if the key pressed is ctrl/cmd + c (copy)
-  if ((e?.ctrlKey || e?.metaKey) && e.keyCode === 67) {
+  if (isModifierPressed && e.keyCode === 67) {
     handleCopy(canvas);
   }
 
   // Check if the key pressed is ctrl/cmd + v (paste)
-  if ((e?.ctrlKey || e?.metaKey) && e.keyCode === 86) {
-    handlePaste(canvas, syncShapeInStorage);
+  if (isModifierPressed && e.keyCode === 86) {
+    handlePaste(canvas, syncShapesInStorage);
   }
 
   // Check if the key pressed is delete/backspace (delete)
-  // if (e.keyCode === 8 || e.keyCode === 46) {
-  //   handleDelete(canvas, deleteShapeFromStorage);
-  // }
-
-  // check if the key pressed is ctrl/cmd + x (cut)
-  if ((e?.ctrlKey || e?.metaKey) && e.keyCode === 88) {
-    handleCopy(canvas);
-    handleDelete(canvas, deleteShapeFromStorage);
+  if (e.keyCode === 8 || e.keyCode === 46) {
+    deleteSelection();
   }
 
-  // check if the key pressed is ctrl/cmd + z (undo)
-  if ((e?.ctrlKey || e?.metaKey) && e.keyCode === 90) {
-    undo();
+  // check if the key pressed is ctrl/cmd + x (cut)
+  if (isModifierPressed && e.keyCode === 88) {
+    handleCopy(canvas);
+    deleteSelection();
+  }
+
+  // check if the key pressed is ctrl/cmd + z (undo) or ctrl/cmd + shift + z (redo)
+  if (isModifierPressed && e.keyCode === 90) {
+    e.preventDefault();
+    if (e.shiftKey) redo();
+    else undo();
   }
 
   // check if the key pressed is ctrl/cmd + y (redo)
-  if ((e?.ctrlKey || e?.metaKey) && e.keyCode === 89) {
+  if (isModifierPressed && e.keyCode === 89) {
+    e.preventDefault();
     redo();
   }
 

@@ -3,17 +3,26 @@ import { v4 as uuid4 } from "uuid";
 
 
 import {
+  Attributes,
   CanvasMouseDown,
   CanvasMouseMove,
   CanvasMouseUp,
   CanvasObjectModified,
   CanvasObjectScaling,
   CanvasPathCreated,
-  CanvasSelectionCreated,
+  CanvasSelectionChanged,
+  DragPoint,
   RenderCanvas,
+  RenderState,
 } from "@/types/type";
 import { defaultNavElement } from "@/constants";
-import { createSpecificShape } from "./shapes";
+import { createSpecificShape, withAbsoluteSelection } from "./shapes";
+
+// tools that create a new object instead of selecting existing ones
+const DRAWING_TOOLS = ["rectangle", "circle", "triangle", "line", "text", "freeform"];
+
+const DEFAULT_COLOR = "#aabbcc";
+const BRUSH_WIDTH = 5;
 
 // initialize fabric canvas
 export const initializeFabric = ({
@@ -38,6 +47,27 @@ export const initializeFabric = ({
   return canvas;
 };
 
+// put the canvas in the mode the selected tool needs. It must run when the tool is picked:
+// fabric decides how to treat a click before mouse:down fires, so that would be too late
+export const applyToolMode = (canvas: fabric.Canvas, tool: string | null) => {
+  const isDrawingTool = DRAWING_TOOLS.includes(tool || "");
+
+  canvas.isDrawingMode = tool === "freeform";
+  canvas.skipTargetFind = isDrawingTool;
+  canvas.selection = !isDrawingTool;
+  canvas.defaultCursor = isDrawingTool ? "crosshair" : "default";
+
+  if (tool === "freeform") {
+    canvas.freeDrawingBrush.width = BRUSH_WIDTH;
+    canvas.freeDrawingBrush.color = DEFAULT_COLOR;
+  }
+
+  if (isDrawingTool) {
+    canvas.discardActiveObject();
+    canvas.requestRenderAll();
+  }
+};
+
 // instantiate creation of custom fabric object/shape and add it to canvas
 export const handleCanvasMouseDown = ({
   options,
@@ -45,62 +75,54 @@ export const handleCanvasMouseDown = ({
   selectedShapeRef,
   isDrawing,
   shapeRef,
+  drawOriginRef,
+  pauseHistory,
 }: CanvasMouseDown) => {
   // get pointer coordinates
   const pointer = canvas.getPointer(options.e);
 
-  /**
-   * get target object i.e., the object that is clicked
-   * findtarget() returns the object that is clicked
-   *
-   * findTarget: http://fabricjs.com/docs/fabric.Canvas.html#findTarget
-   */
-  const target = canvas.findTarget(options.e, false);
-
-  // set canvas drawing mode to false
-  canvas.isDrawingMode = false;
-
-  // if selected shape is freeform, set drawing mode to true and return
+  // fabric draws the path by itself in freeform mode
   if (selectedShapeRef.current === "freeform") {
     isDrawing.current = true;
-    canvas.isDrawingMode = true;
-    canvas.freeDrawingBrush.width = 5;
     return;
   }
 
-  canvas.isDrawingMode = false;
+  // create custom fabric object/shape and set it to shapeRef
+  shapeRef.current = createSpecificShape(
+    selectedShapeRef.current,
+    pointer as any
+  );
 
-  // if target is the selected shape or active selection, set isDrawing to false
-  if (
-    target &&
-    (target.type === selectedShapeRef.current ||
-      target.type === "activeSelection")
-  ) {
-    isDrawing.current = false;
+  // no shape means the select tool is active, so fabric handles the click
+  if (!shapeRef.current) return;
 
-    // set active object to target
-    canvas.setActiveObject(target);
+  isDrawing.current = true;
+  drawOriginRef.current = { x: pointer.x, y: pointer.y };
 
-    /**
-     * setCoords() is used to update the controls of the object
-     * setCoords: http://fabricjs.com/docs/fabric.Object.html#setCoords
-     */
-    target.setCoords();
-  } else {
-    isDrawing.current = true;
+  // every intermediate size of the shape must count as a single undo step
+  pauseHistory();
 
-    // create custom fabric object/shape and set it to shapeRef
-    shapeRef.current = createSpecificShape(
-      selectedShapeRef.current,
-      pointer as any
-    );
+  // add: http://fabricjs.com/docs/fabric.Canvas.html#add
+  canvas.add(shapeRef.current);
+};
 
-    // if shapeRef is not null, add it to canvas
-    if (shapeRef.current) {
-      // add: http://fabricjs.com/docs/fabric.Canvas.html#add
-      canvas.add(shapeRef.current);
-    }
-  }
+// box covered by a drag, whatever the direction the pointer moved in
+export const getDragBounds = (origin: DragPoint, pointer: DragPoint) => ({
+  left: Math.min(origin.x, pointer.x),
+  top: Math.min(origin.y, pointer.y),
+  width: Math.abs(pointer.x - origin.x),
+  height: Math.abs(pointer.y - origin.y),
+});
+
+// circle that fits the horizontal drag and grows from the point where it started
+export const getDragCircle = (origin: DragPoint, pointer: DragPoint) => {
+  const { left, width } = getDragBounds(origin, pointer);
+
+  return {
+    left,
+    top: pointer.y < origin.y ? origin.y - width : origin.y,
+    radius: width / 2,
+  };
 };
 
 // handle mouse move event on canvas to draw shapes with different dimensions
@@ -110,38 +132,29 @@ export const handleCanvaseMouseMove = ({
   isDrawing,
   selectedShapeRef,
   shapeRef,
+  drawOriginRef,
   syncShapeInStorage,
 }: CanvasMouseMove) => {
   // if selected shape is freeform, return
   if (!isDrawing.current) return;
   if (selectedShapeRef.current === "freeform") return;
 
-  canvas.isDrawingMode = false;
-
   // get pointer coordinates
   const pointer = canvas.getPointer(options.e);
+  const origin = drawOriginRef.current;
+
+  if (!origin) return;
 
   // depending on the selected shape, set the dimensions of the shape stored in shapeRef in previous step of handelCanvasMouseDown
   // calculate shape dimensions based on pointer coordinates
   switch (selectedShapeRef?.current) {
     case "rectangle":
-      shapeRef.current?.set({
-        width: pointer.x - (shapeRef.current?.left || 0),
-        height: pointer.y - (shapeRef.current?.top || 0),
-      });
+    case "triangle":
+      shapeRef.current?.set(getDragBounds(origin, pointer));
       break;
 
     case "circle":
-      shapeRef.current.set({
-        radius: Math.abs(pointer.x - (shapeRef.current?.left || 0)) / 2,
-      });
-      break;
-
-    case "triangle":
-      shapeRef.current?.set({
-        width: pointer.x - (shapeRef.current?.left || 0),
-        height: pointer.y - (shapeRef.current?.top || 0),
-      });
+      shapeRef.current?.set(getDragCircle(origin, pointer));
       break;
 
     case "line":
@@ -150,12 +163,6 @@ export const handleCanvaseMouseMove = ({
         y2: pointer.y,
       });
       break;
-
-    case "image":
-      shapeRef.current?.set({
-        width: pointer.x - (shapeRef.current?.left || 0),
-        height: pointer.y - (shapeRef.current?.top || 0),
-      });
 
     default:
       break;
@@ -176,40 +183,44 @@ export const handleCanvasMouseUp = ({
   canvas,
   isDrawing,
   shapeRef,
-  activeObjectRef,
+  drawOriginRef,
   selectedShapeRef,
   syncShapeInStorage,
   setActiveElement,
+  resumeHistory,
 }: CanvasMouseUp) => {
   isDrawing.current = false;
   if (selectedShapeRef.current === "freeform") return;
 
-  // sync shape in storage as drawing is stopped
-  syncShapeInStorage(shapeRef.current);
+  if (shapeRef.current) {
+    // sync shape in storage as drawing is stopped
+    shapeRef.current.setCoords();
+    syncShapeInStorage(shapeRef.current);
+    resumeHistory();
+  }
 
   // set everything to null
   shapeRef.current = null;
-  activeObjectRef.current = null;
+  drawOriginRef.current = null;
   selectedShapeRef.current = null;
+  applyToolMode(canvas, null);
 
-  // if canvas is not in drawing mode, set active element to default nav element after 700ms
-  if (!canvas.isDrawingMode) {
-    setTimeout(() => {
-      setActiveElement(defaultNavElement);
-    }, 700);
-  }
+  // go back to the select tool now that the shape is finished
+  setActiveElement(defaultNavElement);
 };
 
 // update shape in storage when object is modified
 export const handleCanvasObjectModified = ({
   options,
+  canvas,
   syncShapeInStorage,
+  syncShapesInStorage,
 }: CanvasObjectModified) => {
   const target = options.target;
   if (!target) return;
 
   if (target?.type == "activeSelection") {
-    // fix this
+    withAbsoluteSelection(canvas, syncShapesInStorage);
   } else {
     syncShapeInStorage(target);
   }
@@ -248,68 +259,65 @@ export const handleCanvasObjectMoving = ({
   // set coordinates of target object
   target.setCoords();
 
+  // visible area in canvas coordinates, which depends on the zoom and the viewport offset
+  const [, , , , offsetX, offsetY] = canvas.viewportTransform || [1, 0, 0, 1, 0, 0];
+  const zoom = canvas.getZoom();
+  const minLeft = -offsetX / zoom;
+  const minTop = -offsetY / zoom;
+  const maxLeft = ((canvas.width || 0) - offsetX) / zoom;
+  const maxTop = ((canvas.height || 0) - offsetY) / zoom;
+
   // restrict object to canvas boundaries (horizontal)
-  if (target && target.left) {
-    target.left = Math.max(
-      0,
-      Math.min(
-        target.left,
-        (canvas.width || 0) - (target.getScaledWidth() || target.width || 0)
-      )
-    );
-  }
+  target.left = Math.max(
+    minLeft,
+    Math.min(target.left || 0, maxLeft - target.getScaledWidth())
+  );
 
   // restrict object to canvas boundaries (vertical)
-  if (target && target.top) {
-    target.top = Math.max(
-      0,
-      Math.min(
-        target.top,
-        (canvas.height || 0) - (target.getScaledHeight() || target.height || 0)
-      )
-    );
-  }
+  target.top = Math.max(
+    minTop,
+    Math.min(target.top || 0, maxTop - target.getScaledHeight())
+  );
 };
 
-// set element attributes when element is selected
-export const handleCanvasSelectionCreated = ({
-  options,
-  isEditingRef,
+// the native color input only accepts #rrggbb, but fabric can hold values like rgb(0,0,0)
+const toColorInputValue = (color?: unknown) =>
+  typeof color === "string" && color
+    ? `#${new fabric.Color(color).toHex().toLowerCase()}`
+    : DEFAULT_COLOR;
+
+// values the design panel must show for an element, or an empty panel without one
+export const getElementAttributes = (element?: fabric.Object): Attributes => {
+  const text = element as fabric.IText | undefined;
+  const { width = 0, height = 0, scaleX = 1, scaleY = 1 } = element || {};
+
+  return {
+    // not getScaledWidth(): it adds the stroke, and these values are what the panel sets
+    width: element ? (width * scaleX).toFixed(0) : "",
+    height: element ? (height * scaleY).toFixed(0) : "",
+    fill: toColorInputValue(element?.fill),
+    stroke: toColorInputValue(element?.stroke),
+    fontSize: text?.fontSize?.toString() || "",
+    fontFamily: text?.fontFamily || "",
+    fontWeight: text?.fontWeight?.toString() || "",
+  };
+};
+
+// keep the selected ids and the design panel up to date with what the user selected
+export const handleCanvasSelectionChanged = ({
+  canvas,
+  renderStateRef,
+  selectedIdsRef,
   setElementAttributes,
-}: CanvasSelectionCreated) => {
-  // if user is editing manually, return
-  if (isEditingRef.current) return;
+}: CanvasSelectionChanged) => {
+  // renderCanvas replaces the objects, so this is not the user changing the selection
+  if (renderStateRef.current.isSwapping) return;
 
-  // if no element is selected, return
-  if (!options?.selected) return;
-
-  // get the selected element
-  const selectedElement = options?.selected[0] as fabric.Object;
-
-  // if only one element is selected, set element attributes
-  if (selectedElement && options.selected.length === 1) {
-    // calculate scaled dimensions of the object
-    const scaledWidth = selectedElement?.scaleX
-      ? selectedElement?.width! * selectedElement?.scaleX
-      : selectedElement?.width;
-
-    const scaledHeight = selectedElement?.scaleY
-      ? selectedElement?.height! * selectedElement?.scaleY
-      : selectedElement?.height;
-
-    setElementAttributes({
-      width: scaledWidth?.toFixed(0).toString() || "",
-      height: scaledHeight?.toFixed(0).toString() || "",
-      fill: selectedElement?.fill?.toString() || "",
-      stroke: selectedElement?.stroke || "",
-      // @ts-ignore
-      fontSize: selectedElement?.fontSize || "",
-      // @ts-ignore
-      fontFamily: selectedElement?.fontFamily || "",
-      // @ts-ignore
-      fontWeight: selectedElement?.fontWeight || "",
-    });
-  }
+  const selected = canvas.getActiveObjects();
+  selectedIdsRef.current = selected.map((object) => object.objectId as string);
+  setElementAttributes(
+    getElementAttributes(selected.length === 1 ? selected[0] : undefined)
+  );
 };
 
 // update element attributes when element is scaled
@@ -318,68 +326,100 @@ export const handleCanvasObjectScaling = ({
   setElementAttributes,
 }: CanvasObjectScaling) => {
   const selectedElement = options.target;
+  if (!selectedElement) return;
 
-  // calculate scaled dimensions of the object
-  const scaledWidth = selectedElement?.scaleX
-    ? selectedElement?.width! * selectedElement?.scaleX
-    : selectedElement?.width;
+  const { width, height } = getElementAttributes(selectedElement);
 
-  const scaledHeight = selectedElement?.scaleY
-    ? selectedElement?.height! * selectedElement?.scaleY
-    : selectedElement?.height;
+  setElementAttributes((prev) => ({ ...prev, width, height }));
+};
 
-  setElementAttributes((prev) => ({
-    ...prev,
-    width: scaledWidth?.toFixed(0).toString() || "",
-    height: scaledHeight?.toFixed(0).toString() || "",
-  }));
+// storage entries in the order they must be painted, from the back to the front
+export const sortShapeEntries = (canvasObjects: ReadonlyMap<string, any>) =>
+  Array.from(canvasObjects).sort(
+    ([, a], [, b]) => (a?.zIndex ?? 0) - (b?.zIndex ?? 0)
+  );
+
+// rebuilding the canvas now would drop the drag, the drawing or the text being edited
+export const isCanvasBusy = (
+  canvas: fabric.Canvas,
+  isDrawing: React.MutableRefObject<boolean>
+) =>
+  isDrawing.current ||
+  Boolean((canvas as any)._currentTransform) ||
+  Boolean((canvas.getActiveObject() as fabric.IText | null)?.isEditing);
+
+const restoreSelection = (
+  canvas: fabric.Canvas,
+  objects: fabric.Object[],
+  selectedIds: string[]
+) => {
+  const selected = objects.filter((object) =>
+    selectedIds.includes(object.objectId as string)
+  );
+
+  if (selected.length === 1) canvas.setActiveObject(selected[0]);
+  if (selected.length > 1) {
+    canvas.setActiveObject(new fabric.ActiveSelection(selected, { canvas }));
+  }
+};
+
+// replace everything on the canvas at once, so that it never shows up empty
+const swapCanvasObjects = (
+  canvas: fabric.Canvas,
+  objects: fabric.Object[],
+  state: RenderState,
+  selectedIds: string[]
+) => {
+  state.isSwapping = true;
+  canvas.clear();
+  canvas.add(...objects);
+  restoreSelection(canvas, objects, selectedIds);
+  state.isSwapping = false;
+
+  canvas.requestRenderAll();
 };
 
 // render canvas objects coming from storage on canvas
 export const renderCanvas = ({
-  fabricRef,
+  canvas,
   canvasObjects,
-  activeObjectRef,
+  isDrawing,
+  renderStateRef,
+  selectedIdsRef,
+  onRendered,
 }: RenderCanvas) => {
-  // clear canvas
-  fabricRef.current?.clear();
+  const state = renderStateRef.current;
 
-  // render all objects on canvas
-  Array.from(canvasObjects, ([objectId, objectData]) => {
-    /**
-     * enlivenObjects() is used to render objects on canvas.
-     * It takes two arguments:
-     * 1. objectData: object data to render on canvas
-     * 2. callback: callback function to execute after rendering objects
-     * on canvas
-     *
-     * enlivenObjects: http://fabricjs.com/docs/fabric.util.html#.enlivenObjectEnlivables
-     */
-    fabric.util.enlivenObjects(
-      [objectData],
-      (enlivenedObjects: fabric.Object[]) => {
-        enlivenedObjects.forEach((enlivenedObj) => {
-          // if element is active, keep it in active state so that it can be edited further
-          if (activeObjectRef.current?.objectId === objectId) {
-            fabricRef.current?.setActiveObject(enlivenedObj);
-          }
+  if (isCanvasBusy(canvas, isDrawing)) {
+    state.isPending = true;
+    return;
+  }
 
-          // add object to canvas
-          fabricRef.current?.add(enlivenedObj);
-        });
-      },
-      /**
-       * specify namespace of the object for fabric to render it on canvas
-       * A namespace is a string that is used to identify the type of
-       * object.
-       *
-       * Fabric Namespace: http://fabricjs.com/docs/fabric.html
-       */
-      "fabric"
-    );
-  });
+  state.isPending = false;
+  const version = ++state.version;
+  const shapes = sortShapeEntries(canvasObjects).map(([, shape]) => shape);
 
-  fabricRef.current?.renderAll();
+  /**
+   * enlivenObjects() is asynchronous for images, so the canvas only changes once
+   * every object is ready. Older renders are skipped to avoid duplicated objects.
+   *
+   * enlivenObjects: http://fabricjs.com/docs/fabric.util.html#.enlivenObjectEnlivables
+   */
+  fabric.util.enlivenObjects(
+    shapes,
+    (objects: fabric.Object[]) => {
+      if (version !== state.version) return;
+
+      if (isCanvasBusy(canvas, isDrawing)) {
+        state.isPending = true;
+        return;
+      }
+
+      swapCanvasObjects(canvas, objects, state, selectedIdsRef.current);
+      onRendered();
+    },
+    "fabric"
+  );
 };
 
 // resize canvas dimensions on window resize
@@ -412,11 +452,15 @@ export const handleCanvasZoom = ({
   const zoomStep = 0.001;
 
   // calculate zoom based on mouse scroll wheel with min and max zoom
-  zoom = Math.min(Math.max(minZoom, zoom + delta * zoomStep), maxZoom);
+  // scrolling up zooms in and scrolling down zooms out
+  zoom = Math.min(Math.max(minZoom, zoom - delta * zoomStep), maxZoom);
 
   // set zoom to canvas
   // zoomToPoint: http://fabricjs.com/docs/fabric.Canvas.html#zoomToPoint
   canvas.zoomToPoint({ x: options.e.offsetX, y: options.e.offsetY }, zoom);
+
+  // there is no panning, so 100% must always show the canvas in its original position
+  if (zoom === maxZoom) canvas.setViewportTransform([1, 0, 0, 1, 0, 0]);
 
   options.e.preventDefault();
   options.e.stopPropagation();

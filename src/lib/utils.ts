@@ -38,12 +38,12 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-export function generateRandomName(): string {
-  const randomAdjective =
-    adjectives[Math.floor(Math.random() * adjectives.length)];
-  const randomAnimal = animals[Math.floor(Math.random() * animals.length)];
+// the same connection always gets the same name
+export function getNameFromId(id: number): string {
+  const adjective = adjectives[id % adjectives.length];
+  const animal = animals[(id * 7) % animals.length];
 
-  return `${randomAdjective} ${randomAnimal}`;
+  return `${adjective} ${animal}`;
 }
 
 export const getShapeInfo = (shapeType: string) => {
@@ -84,7 +84,7 @@ export const getShapeInfo = (shapeType: string) => {
         name: "Image",
       };
 
-    case "freeform":
+    case "path":
       return {
         icon: "/assets/freeform.svg",
         name: "Free Drawing",
@@ -105,7 +105,7 @@ export const exportToPdf = () => {
 
   // use jspdf
   const doc = new jsPDF({
-    orientation: "landscape",
+    orientation: canvas.width >= canvas.height ? "landscape" : "portrait",
     unit: "px",
     format: [canvas.width, canvas.height],
   });

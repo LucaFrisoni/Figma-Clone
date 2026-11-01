@@ -82,6 +82,7 @@ const OverlayThread = ({ thread, maxZIndex }: OverlayThreadProps) => {
       className="absolute left-0 top-0 flex gap-5"
       style={{
         transform: `translate(${thread.metadata.x}px, ${thread.metadata.y}px)`,
+        zIndex: thread.metadata.zIndex,
       }}
     >
       {/* render the thread */}

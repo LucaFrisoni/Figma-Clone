@@ -3,29 +3,40 @@
 import { fabric } from "fabric";
 import { useEffect, useRef, useState } from "react";
 
-import { useMutation, useRedo, useStorage, useUndo } from "../../liveblocks.config";
 import {
+  useBatch,
+  useHistory,
+  useMutation,
+  useRedo,
+  useStorage,
+  useUndo,
+} from "../../liveblocks.config";
+import {
+  applyToolMode,
+  getElementAttributes,
   handleCanvaseMouseMove,
   handleCanvasMouseDown,
   handleCanvasMouseUp,
   handleCanvasObjectModified,
   handleCanvasObjectMoving,
   handleCanvasObjectScaling,
-  handleCanvasSelectionCreated,
+  handleCanvasSelectionChanged,
   handleCanvasZoom,
   handlePathCreated,
   handleResize,
   initializeFabric,
   renderCanvas,
+  sortShapeEntries,
 } from "@/lib/canvas";
 import { handleDelete, handleKeyDown } from "@/lib/key-events";
 import  LeftSidebar  from "../components/LeftSidebar";
 import { handleImageUpload } from "@/lib/shapes";
 import { defaultNavElement } from "@/constants";
-import { ActiveElement, Attributes } from "@/types/type";
+import { ActiveElement, Attributes, DragPoint, RenderState } from "@/types/type";
 import Navbar from "@/components/Navbar";
 import RightSidebar from "@/components/RightSidebar";
 import Live from "@/components/Live";
+import ConnectionStatus from "@/components/ConnectionStatus";
 
 const Home = () => {
   /**
@@ -39,6 +50,13 @@ const Home = () => {
   const redo = useRedo();
 
   /**
+   * pause and resume merge everything between them into a single undo step.
+   * useBatch does the same for mutations that run together.
+   */
+  const { pause: pauseHistory, resume: resumeHistory } = useHistory();
+  const batch = useBatch<void>();
+
+  /**
    * useStorage is a hook provided by Liveblocks that allows you to store
    * data in a key-value store and automatically sync it with other users
    * i.e., subscribes to updates to that selected data
@@ -48,6 +66,10 @@ const Home = () => {
    * Over here, we are storing the canvas objects in the key-value store.
    */
   const canvasObjects = useStorage((root) => root.canvasObjects);
+
+  // always the latest objects, for the listeners that only get registered once
+  const canvasObjectsRef = useRef(canvasObjects);
+  canvasObjectsRef.current = canvasObjects;
 
   /**
    * canvasRef is a reference to the canvas element that we'll use to initialize
@@ -74,6 +96,9 @@ const Home = () => {
    */
   const shapeRef = useRef<fabric.Object | null>(null);
 
+  // drawOriginRef is the point where the user started dragging the new shape
+  const drawOriginRef = useRef<DragPoint | null>(null);
+
   /**
    * selectedShapeRef is a reference to the shape that the user has selected.
    * For example, if the user has selected the rectangle shape, then this will
@@ -86,20 +111,24 @@ const Home = () => {
   const selectedShapeRef = useRef<string | null>(null);
 
   /**
-   * activeObjectRef is a reference to the active/selected object in the canvas
-   *
-   * We want to keep track of the active object so that we can keep it in
-   * selected form when user is editing the width, height, color etc
-   * properties/attributes of the object.
+   * selectedIdsRef holds the ids of the selected objects in the canvas
    *
    * Since we're using live storage to sync shapes across users in real-time,
    * we have to re-render the canvas when the shapes are updated.
-   * Due to this re-render, the selected shape is lost. We want to keep track
-   * of the selected shape so that we can keep it selected when the
-   * canvas re-renders.
+   * Due to this re-render, the selected shapes are lost. We want to keep track
+   * of them so that we can keep them selected when the canvas re-renders.
    */
-  const activeObjectRef = useRef<fabric.Object | null>(null);
+  const selectedIdsRef = useRef<string[]>([]);
+
+  // isEditingRef is true while the user types a size in the design panel
   const isEditingRef = useRef(false);
+
+  // renderStateRef coordinates the renders of the canvas, see RenderState
+  const renderStateRef = useRef<RenderState>({
+    version: 0,
+    isSwapping: false,
+    isPending: false,
+  });
 
   /**
    * imageInputRef is a reference to the input element that we use to upload
@@ -115,11 +144,8 @@ const Home = () => {
    * activeElement is an object that contains the name, value and icon of the
    * active element in the navbar.
    */
-  const [activeElement, setActiveElement] = useState<ActiveElement>({
-    name: "",
-    value: "",
-    icon: "",
-  });
+  const [activeElement, setActiveElement] =
+    useState<ActiveElement>(defaultNavElement);
 
   /**
    * elementAttributes is an object that contains the attributes of the selected
@@ -129,15 +155,9 @@ const Home = () => {
    * is editing the width, height, color etc properties/attributes of the
    * object.
    */
-  const [elementAttributes, setElementAttributes] = useState<Attributes>({
-    width: "",
-    height: "",
-    fontSize: "",
-    fontFamily: "",
-    fontWeight: "",
-    fill: "#aabbcc",
-    stroke: "#aabbcc",
-  });
+  const [elementAttributes, setElementAttributes] = useState<Attributes>(
+    getElementAttributes()
+  );
 
   /**
    * deleteShapeFromStorage is a mutation that deletes a shape from the
@@ -209,6 +229,13 @@ const Home = () => {
     shapeData.objectId = objectId;
 
     const canvasObjects = storage.get("canvasObjects");
+
+    // new shapes go on top. Shapes saved before layers existed keep their place
+    object.zIndex ??= canvasObjects.has(objectId)
+      ? 0
+      : Math.max(0, ...Array.from(canvasObjects.values(), (shape) => shape.zIndex ?? 0)) + 1;
+    shapeData.zIndex = object.zIndex;
+
     /**
      * set is a method provided by Liveblocks that allows you to set a value
      *
@@ -216,6 +243,52 @@ const Home = () => {
      */
     canvasObjects.set(objectId, shapeData);
   }, []);
+
+  // sync several shapes as a single undo step
+  const syncShapesInStorage = (shapes: fabric.Object[]) =>
+    batch(() => shapes.forEach((shape) => syncShapeInStorage(shape)));
+
+  // delete the selected shapes as a single undo step
+  const deleteSelection = () =>
+    batch(() => handleDelete(fabricRef.current as any, deleteShapeFromStorage));
+
+  // refresh the design panel with the selection restored by a render
+  const refreshElementAttributes = () => {
+    if (isEditingRef.current) return;
+
+    const selected = fabricRef.current?.getActiveObjects() || [];
+    setElementAttributes(
+      getElementAttributes(selected.length === 1 ? selected[0] : undefined)
+    );
+  };
+
+  const requestCanvasRender = () => {
+    if (!fabricRef.current) return;
+
+    renderCanvas({
+      canvas: fabricRef.current,
+      canvasObjects: canvasObjectsRef.current,
+      isDrawing,
+      renderStateRef,
+      selectedIdsRef,
+      onRendered: refreshElementAttributes,
+    });
+  };
+
+  // run the render postponed by a drag or text editing once fabric has finished with it
+  const flushPendingRender = () => {
+    setTimeout(() => {
+      if (renderStateRef.current.isPending) requestCanvasRender();
+    }, 0);
+  };
+
+  // leave whatever tool was active and use the given one
+  const activateTool = (tool: string | null) => {
+    selectedShapeRef.current = tool;
+    isDrawing.current = false;
+
+    if (fabricRef.current) applyToolMode(fabricRef.current, tool);
+  };
 
   /**
    * Set the active element in the navbar and perform the action based
@@ -227,50 +300,63 @@ const Home = () => {
     setActiveElement(elem);
 
     switch (elem?.value) {
-      // delete all the shapes from the canvas
+      // delete all the shapes from the canvas, which affects everyone in the room
       case "reset":
-        // clear the storage
-        deleteAllShapes();
-        // clear the canvas
-        fabricRef.current?.clear();
+        activateTool(null);
+        if (window.confirm("Delete every shape for all the users in this room?")) {
+          // clear the storage
+          deleteAllShapes();
+          // clear the canvas
+          fabricRef.current?.clear();
+        }
         // set "select" as the active element
         setActiveElement(defaultNavElement);
         break;
 
       // delete the selected shape from the canvas
       case "delete":
+        activateTool(null);
         // delete it from the canvas
-        handleDelete(fabricRef.current as any, deleteShapeFromStorage);
+        deleteSelection();
         // set "select" as the active element
         setActiveElement(defaultNavElement);
         break;
 
       // upload an image to the canvas
       case "image":
+        activateTool(null);
         // trigger the click event on the input element which opens the file dialog
         imageInputRef.current?.click();
-        /**
-         * set drawing mode to false
-         * If the user is drawing on the canvas, we want to stop the
-         * drawing mode when clicked on the image item from the dropdown.
-         */
-        isDrawing.current = false;
-
-        if (fabricRef.current) {
-          // disable the drawing mode of canvas
-          fabricRef.current.isDrawingMode = false;
-        }
         break;
 
-      // for comments, do nothing
+      // for comments, there is no canvas tool
       case "comments":
+        activateTool(null);
         break;
 
       default:
         // set the selected shape to the selected element
-        selectedShapeRef.current = elem?.value as string;
+        activateTool(typeof elem?.value === "string" ? elem.value : null);
         break;
     }
+  };
+
+  // add the chosen image and leave the input ready to accept the same file again
+  const handleImageInputChange = (e: any) => {
+    // prevent the default behavior of the input element
+    e.stopPropagation();
+
+    const file = e.target.files[0];
+    e.target.value = "";
+    setActiveElement(defaultNavElement);
+
+    if (!file) return;
+
+    handleImageUpload({
+      file,
+      canvas: fabricRef as any,
+      syncShapeInStorage,
+    });
   };
 
   useEffect(() => {
@@ -294,6 +380,8 @@ const Home = () => {
         selectedShapeRef,
         isDrawing,
         shapeRef,
+        drawOriginRef,
+        pauseHistory,
       });
     });
 
@@ -311,6 +399,7 @@ const Home = () => {
         isDrawing,
         selectedShapeRef,
         shapeRef,
+        drawOriginRef,
         syncShapeInStorage,
       });
     });
@@ -327,12 +416,17 @@ const Home = () => {
         canvas,
         isDrawing,
         shapeRef,
-        activeObjectRef,
+        drawOriginRef,
         selectedShapeRef,
         syncShapeInStorage,
         setActiveElement,
+        resumeHistory,
       });
+      flushPendingRender();
     });
+
+    // the text being edited is saved when the user leaves it
+    canvas.on("text:editing:exited", flushPendingRender);
 
     /**
      * listen to the path created event on the canvas which is fired when
@@ -361,7 +455,9 @@ const Home = () => {
     canvas.on("object:modified", (options) => {
       handleCanvasObjectModified({
         options,
+        canvas,
         syncShapeInStorage,
+        syncShapesInStorage,
       });
     });
 
@@ -379,19 +475,24 @@ const Home = () => {
     });
 
     /**
-     * listen to the selection created event on the canvas which is fired
-     * when the user selects an object on the canvas.
+     * listen to the selection events on the canvas which are fired when the
+     * user selects an object, changes the selection or deselects everything.
      *
      * Event inspector: http://fabricjs.com/events
      * Event list: http://fabricjs.com/docs/fabric.Canvas.html#fire
      */
-    canvas.on("selection:created", (options) => {
-      handleCanvasSelectionCreated({
-        options,
-        isEditingRef,
+    const onSelectionChanged = () => {
+      handleCanvasSelectionChanged({
+        canvas,
+        renderStateRef,
+        selectedIdsRef,
         setElementAttributes,
       });
-    });
+    };
+
+    canvas.on("selection:created", onSelectionChanged);
+    canvas.on("selection:updated", onSelectionChanged);
+    canvas.on("selection:cleared", onSelectionChanged);
 
     /**
      * listen to the scaling event on the canvas which is fired when the
@@ -428,11 +529,13 @@ const Home = () => {
      * We're using this to resize the canvas when the user resizes the
      * window.
      */
-    window.addEventListener("resize", () => {
+    const onWindowResize = () => {
       handleResize({
         canvas: fabricRef.current,
       });
-    });
+    };
+
+    window.addEventListener("resize", onWindowResize);
 
     /**
      * listen to the key down event on the window which is fired when the
@@ -440,19 +543,23 @@ const Home = () => {
      *
      * We're using this to perform some actions like delete, copy, paste, etc when the user presses the respective keys on the keyboard.
      */
-    window.addEventListener("keydown", (e) =>
+    const onWindowKeyDown = (e: KeyboardEvent) =>
       handleKeyDown({
         e,
         canvas: fabricRef.current,
         undo,
         redo,
-        syncShapeInStorage,
-        deleteShapeFromStorage,
-      })
-    );
+        syncShapesInStorage,
+        deleteSelection,
+      });
+
+    window.addEventListener("keydown", onWindowKeyDown);
 
     // dispose the canvas and remove the event listeners when the component unmounts
     return () => {
+      // discard any render still loading its images
+      renderStateRef.current.version++;
+
       /**
        * dispose is a method provided by Fabric that allows you to dispose
        * the canvas. It clears the canvas and removes all the event
@@ -463,55 +570,27 @@ const Home = () => {
       canvas.dispose();
 
       // remove the event listeners
-      window.removeEventListener("resize", () => {
-        handleResize({
-          canvas: null,
-        });
-      });
-
-      window.removeEventListener("keydown", (e) =>
-        handleKeyDown({
-          e,
-          canvas: fabricRef.current,
-          undo,
-          redo,
-          syncShapeInStorage,
-          deleteShapeFromStorage,
-        })
-      );
+      window.removeEventListener("resize", onWindowResize);
+      window.removeEventListener("keydown", onWindowKeyDown);
     };
   }, [canvasRef]); // run this effect only once when the component mounts and the canvasRef changes
 
   // render the canvas when the canvasObjects from live storage changes
   useEffect(() => {
-    renderCanvas({
-      fabricRef,
-      canvasObjects,
-      activeObjectRef,
-    });
+    requestCanvasRender();
   }, [canvasObjects]);
 
   return (
-    <main className='h-screen overflow-hidden'>
+    <main className='flex h-screen flex-col overflow-hidden'>
       <Navbar
         imageInputRef={imageInputRef}
         activeElement={activeElement}
-        handleImageUpload={(e: any) => {
-          // prevent the default behavior of the input element
-          e.stopPropagation();
-
-          handleImageUpload({
-            file: e.target.files[0],
-            canvas: fabricRef as any,
-            shapeRef,
-            syncShapeInStorage,
-          });
-        }}
+        handleImageUpload={handleImageInputChange}
         handleActiveElement={handleActiveElement}
       />
 
-      <section className='flex h-full flex-row'>
-        <LeftSidebar allShapes={Array.from(canvasObjects)} />
+      <section className='flex min-h-0 flex-1 flex-row'>
+        <LeftSidebar allShapes={sortShapeEntries(canvasObjects)} />
 
         <Live canvasRef={canvasRef} undo={undo} redo={redo} />
 
@@ -520,10 +599,11 @@ const Home = () => {
           setElementAttributes={setElementAttributes}
           fabricRef={fabricRef}
           isEditingRef={isEditingRef}
-          activeObjectRef={activeObjectRef}
           syncShapeInStorage={syncShapeInStorage}
         />
       </section>
+
+      <ConnectionStatus />
     </main>
   );
 };

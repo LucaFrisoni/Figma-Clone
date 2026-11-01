@@ -115,13 +115,11 @@ The browser tests press Reset, so they run in their own Liveblocks room and refu
 
 **Publishing Changes**
 
-`main` only accepts commits that already passed CI, and that includes administrators:
+`main` only accepts changes through a pull request, and that includes administrators. No review is needed, but the merge stays blocked until the "CI passed" check is green: it covers the tests and the Vercel deployment.
 
 ```bash
 git switch -c my-change
 git push -u origin my-change
-# wait for the "CI passed" check on GitHub, then:
-git push origin my-change:main
 ```
 
-If `main` moved in the meantime, rebase the branch on it and push again, because the new commits need their own check.
+Open the pull request on GitHub and merge it when the check passes. If `main` moved in the meantime, press "Update branch" and wait for the check again.

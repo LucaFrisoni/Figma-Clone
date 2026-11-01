@@ -108,4 +108,20 @@ Open [http://localhost:3000](http://localhost:3000) in your browser to view the 
 
 ```bash
 npm test
+npm run test:e2e
 ```
+
+The browser tests press Reset, so they run in their own Liveblocks room and refuse to run on the production one.
+
+**Publishing Changes**
+
+`main` only accepts commits that already passed CI, and that includes administrators:
+
+```bash
+git switch -c my-change
+git push -u origin my-change
+# wait for the "CI passed" check on GitHub, then:
+git push origin my-change:main
+```
+
+If `main` moved in the meantime, rebase the branch on it and push again, because the new commits need their own check.

@@ -1,0 +1,93 @@
+# Checks every pushed commit. "CI passed" is the check that main requires before accepting a commit.
+name: CI
+
+on:
+  push:
+
+permissions:
+  contents: read
+  deployments: read
+
+env:
+  NEXT_PUBLIC_LIVEBLOCKS_PUBLIC_KEY: ${{ secrets.NEXT_PUBLIC_LIVEBLOCKS_PUBLIC_KEY }}
+
+jobs:
+  quality:
+    name: Lint, types, unit tests and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      # scripts are skipped because the optional canvas package can't compile here, and no one uses it
+      - run: npm ci --ignore-scripts
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  e2e:
+    name: Browser tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # all the runs share the same test room, so they wait for each other
+    concurrency: e2e-room
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-traces
+          path: test-results/
+          retention-days: 7
+
+  deploy:
+    name: Vercel deployment
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - run: node .github/scripts/wait-for-vercel.mjs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+  ci-passed:
+    name: CI passed
+    runs-on: ubuntu-latest
+    needs: [quality, e2e, deploy]
+    # it has to report even when a job fails, otherwise the check would stay pending
+    if: always()
+    steps:
+      - name: Require every job to succeed
+        run: test "${{ join(needs.*.result, ' ') }}" = "success success success"
+
+  production-smoke:
+    name: Production smoke test
+    runs-on: ubuntu-latest
+    needs: ci-passed
+    if: github.ref == 'refs/heads/main'
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+        env:
+          SMOKE_URL: https://figma-clone-sooty.vercel.app/

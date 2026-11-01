@@ -7,7 +7,9 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:e2e": "playwright test",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@liveblocks/client": "^1.12.0",
@@ -32,6 +34,7 @@
     "uuid": "^9.0.1"
   },
   "devDependencies": {
+    "@playwright/test": "^1.64.1",
     "@types/fabric": "^5.3.7",
     "@types/node": "^20",
     "@types/react": "^18",

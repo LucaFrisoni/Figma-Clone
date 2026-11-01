@@ -11,7 +11,8 @@ export function Room({ children }: { children: ReactNode }) {
   // Coment
   return (
     <RoomProvider
-      id="my-room"
+      // tests and previews use their own room to keep away from the real canvas
+      id={process.env.NEXT_PUBLIC_LIVEBLOCKS_ROOM_ID || "my-room"}
       initialPresence={{
         cursor: null,
         message: null,
